@@ -1,0 +1,13 @@
+{
+  "name": "yt-auto-seo",
+  "version": "1.0.0",
+  "description": "YouTube Auto SEO automation server",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "googleapis": "^160.0.0"
+  }
+}
