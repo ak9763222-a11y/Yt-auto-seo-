@@ -1,5 +1,6 @@
 const express = require("express");
 const { google } = require("googleapis");
+const OpenAI = require("openai");
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
@@ -14,18 +15,37 @@ const CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI;
 
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
 const TOKEN_FILE = path.join("/tmp", "youtube-token.json");
 
 
 // ===============================
-// Google OAuth State
+// OPENAI CLIENT
+// ===============================
+
+const openai = OPENAI_API_KEY
+  ? new OpenAI({
+      apiKey: OPENAI_API_KEY
+    })
+  : null;
+
+
+// ===============================
+// GOOGLE OAUTH STATE
 // ===============================
 
 function createState() {
-  const random = crypto.randomBytes(32).toString("hex");
+
+  const random = crypto
+    .randomBytes(32)
+    .toString("hex");
 
   const signature = crypto
-    .createHmac("sha256", CLIENT_SECRET || "secret")
+    .createHmac(
+      "sha256",
+      CLIENT_SECRET || "secret"
+    )
     .update(random)
     .digest("hex");
 
@@ -34,7 +54,9 @@ function createState() {
 
 
 function verifyState(state) {
+
   try {
+
     if (!state || !state.includes(".")) {
       return false;
     }
@@ -49,7 +71,10 @@ function verifyState(state) {
     const signature = parts[1];
 
     const expected = crypto
-      .createHmac("sha256", CLIENT_SECRET || "secret")
+      .createHmac(
+        "sha256",
+        CLIENT_SECRET || "secret"
+      )
       .update(random)
       .digest("hex");
 
@@ -59,8 +84,11 @@ function verifyState(state) {
     );
 
   } catch {
+
     return false;
+
   }
+
 }
 
 
@@ -69,35 +97,72 @@ function verifyState(state) {
 // ===============================
 
 app.get("/", (req, res) => {
+
   res.send(`
+
     <html>
+
       <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
+
+        <meta
+          name="viewport"
+          content="width=device-width, initial-scale=1"
+        >
+
         <title>YT Auto SEO</title>
+
       </head>
 
-      <body style="font-family:Arial;text-align:center;padding:40px;">
+      <body style="
+        font-family:Arial;
+        text-align:center;
+        padding:40px;
+      ">
 
         <h1>YT Auto SEO 🚀</h1>
 
-        <p>Server is running successfully.</p>
+        <p>
+          Server is running successfully.
+        </p>
 
         <br>
 
-        <a href="/auth/google"
-           style="
-           display:inline-block;
-           padding:15px 25px;
-           background:#4285f4;
-           color:white;
-           text-decoration:none;
-           border-radius:8px;">
-           Connect YouTube
+        <a
+          href="/auth/google"
+          style="
+            display:inline-block;
+            padding:15px 25px;
+            background:#4285f4;
+            color:white;
+            text-decoration:none;
+            border-radius:8px;
+          "
+        >
+          Connect YouTube
+        </a>
+
+        <br><br>
+
+        <a
+          href="/api/ai-test"
+          style="
+            display:inline-block;
+            padding:15px 25px;
+            background:#10a37f;
+            color:white;
+            text-decoration:none;
+            border-radius:8px;
+          "
+        >
+          Test AI
         </a>
 
       </body>
+
     </html>
+
   `);
+
 });
 
 
@@ -106,10 +171,17 @@ app.get("/", (req, res) => {
 // ===============================
 
 app.get("/health", (req, res) => {
+
   res.json({
+
     status: "ok",
-    service: "YT Auto SEO"
+
+    service: "YT Auto SEO",
+
+    aiConfigured: Boolean(OPENAI_API_KEY)
+
   });
+
 });
 
 
@@ -121,39 +193,50 @@ app.get("/auth/google", (req, res) => {
 
   try {
 
-    if (!CLIENT_ID || !CLIENT_SECRET || !REDIRECT_URI) {
+    if (
+      !CLIENT_ID ||
+      !CLIENT_SECRET ||
+      !REDIRECT_URI
+    ) {
+
       return res.status(500).send(
         "Google OAuth Environment Variables are missing."
       );
+
     }
 
-    const oauth2Client = new google.auth.OAuth2(
-      CLIENT_ID,
-      CLIENT_SECRET,
-      REDIRECT_URI
-    );
+    const oauth2Client =
+      new google.auth.OAuth2(
+        CLIENT_ID,
+        CLIENT_SECRET,
+        REDIRECT_URI
+      );
 
     const state = createState();
 
-    const authUrl = oauth2Client.generateAuthUrl({
+    const authUrl =
+      oauth2Client.generateAuthUrl({
 
-      access_type: "offline",
+        access_type: "offline",
 
-      prompt: "consent",
+        prompt: "consent",
 
-      state: state,
+        state: state,
 
-      scope: [
-        "https://www.googleapis.com/auth/youtube"
-      ]
+        scope: [
+          "https://www.googleapis.com/auth/youtube"
+        ]
 
-    });
+      });
 
     res.redirect(authUrl);
 
   } catch (error) {
 
-    console.error("OAuth Start Error:", error);
+    console.error(
+      "OAuth Start Error:",
+      error
+    );
 
     res.status(500).send(
       "Unable to start Google authorization."
@@ -168,285 +251,550 @@ app.get("/auth/google", (req, res) => {
 // GOOGLE CALLBACK
 // ===============================
 
-app.get("/oauth2callback", async (req, res) => {
-
-  try {
-
-    if (!CLIENT_ID || !CLIENT_SECRET || !REDIRECT_URI) {
-
-      return res.status(500).send(
-        "Google OAuth Environment Variables are missing."
-      );
-
-    }
-
-
-    // Check OAuth state
-
-    if (!verifyState(req.query.state)) {
-
-      return res.status(400).send(`
-        <h2>Invalid OAuth state ❌</h2>
-        <p>Please start Google connection again.</p>
-      `);
-
-    }
-
-
-    // Check authorization code
-
-    if (!req.query.code) {
-
-      return res.status(400).send(`
-        <h2>Authorization code missing ❌</h2>
-      `);
-
-    }
-
-
-    const oauth2Client = new google.auth.OAuth2(
-      CLIENT_ID,
-      CLIENT_SECRET,
-      REDIRECT_URI
-    );
-
-
-    // Get tokens
-
-    const result = await oauth2Client.getToken(
-      req.query.code
-    );
-
-    const tokens = result.tokens;
-
-
-    if (!tokens || !tokens.access_token) {
-
-      return res.status(400).send(`
-        <h2>Google token was not received ❌</h2>
-      `);
-
-    }
-
-
-    // Save token temporarily
-
-    fs.writeFileSync(
-      TOKEN_FILE,
-      JSON.stringify(tokens),
-      "utf8"
-    );
-
-
-    console.log(
-      "Google OAuth tokens saved successfully."
-    );
-
-
-    res.send(`
-      <html>
-
-        <head>
-          <meta name="viewport"
-                content="width=device-width, initial-scale=1">
-          <title>YT Auto SEO</title>
-        </head>
-
-        <body style="
-          font-family:Arial;
-          text-align:center;
-          padding:40px;
-        ">
-
-          <h1>Google Connected Successfully ✅</h1>
-
-          <p>
-            YouTube authorization was successful.
-          </p>
-
-          <p>
-            YT Auto SEO is now connected to your YouTube account.
-          </p>
-
-          <br>
-
-          <p>
-            You can close this page.
-          </p>
-
-        </body>
-
-      </html>
-    `);
-
-  } catch (error) {
-
-    console.error(
-      "Google OAuth Callback Error:",
-      error
-    );
-
-
-    // IMPORTANT:
-    // Never save a bad/invalid token
+app.get(
+  "/oauth2callback",
+  async (req, res) => {
 
     try {
 
-      if (fs.existsSync(TOKEN_FILE)) {
-        fs.unlinkSync(TOKEN_FILE);
+      if (
+        !CLIENT_ID ||
+        !CLIENT_SECRET ||
+        !REDIRECT_URI
+      ) {
+
+        return res.status(500).send(
+          "Google OAuth Environment Variables are missing."
+        );
+
       }
 
-    } catch {}
 
+      if (!verifyState(req.query.state)) {
 
-    res.status(400).send(`
-      <html>
+        return res.status(400).send(`
 
-        <body style="
-          font-family:Arial;
-          text-align:center;
-          padding:40px;
-        ">
-
-          <h2>Google Authorization Failed ❌</h2>
+          <h2>
+            Invalid OAuth state ❌
+          </h2>
 
           <p>
             Please start Google connection again.
           </p>
 
-          <p>
-            Error: invalid or expired authorization.
-          </p>
+        `);
 
-        </body>
+      }
 
-      </html>
-    `);
+
+      if (!req.query.code) {
+
+        return res.status(400).send(`
+
+          <h2>
+            Authorization code missing ❌
+          </h2>
+
+        `);
+
+      }
+
+
+      const oauth2Client =
+        new google.auth.OAuth2(
+          CLIENT_ID,
+          CLIENT_SECRET,
+          REDIRECT_URI
+        );
+
+
+      const result =
+        await oauth2Client.getToken(
+          req.query.code
+        );
+
+
+      const tokens = result.tokens;
+
+
+      if (
+        !tokens ||
+        !tokens.access_token
+      ) {
+
+        return res.status(400).send(`
+
+          <h2>
+            Google token was not received ❌
+          </h2>
+
+        `);
+
+      }
+
+
+      fs.writeFileSync(
+        TOKEN_FILE,
+        JSON.stringify(tokens),
+        "utf8"
+      );
+
+
+      console.log(
+        "Google OAuth tokens saved successfully."
+      );
+
+
+      res.send(`
+
+        <html>
+
+          <head>
+
+            <meta
+              name="viewport"
+              content="width=device-width, initial-scale=1"
+            >
+
+            <title>
+              YT Auto SEO
+            </title>
+
+          </head>
+
+          <body style="
+            font-family:Arial;
+            text-align:center;
+            padding:40px;
+          ">
+
+            <h1>
+              Google Connected Successfully ✅
+            </h1>
+
+            <p>
+              YouTube authorization was successful.
+            </p>
+
+            <p>
+              YT Auto SEO is now connected
+              to your YouTube account.
+            </p>
+
+            <br>
+
+            <p>
+              You can close this page.
+            </p>
+
+          </body>
+
+        </html>
+
+      `);
+
+    } catch (error) {
+
+      console.error(
+        "Google OAuth Callback Error:",
+        error
+      );
+
+
+      try {
+
+        if (fs.existsSync(TOKEN_FILE)) {
+
+          fs.unlinkSync(TOKEN_FILE);
+
+        }
+
+      } catch {}
+
+
+      res.status(400).send(`
+
+        <html>
+
+          <body style="
+            font-family:Arial;
+            text-align:center;
+            padding:40px;
+          ">
+
+            <h2>
+              Google Authorization Failed ❌
+            </h2>
+
+            <p>
+              Please start Google connection again.
+            </p>
+
+            <p>
+              Error: invalid or expired authorization.
+            </p>
+
+          </body>
+
+        </html>
+
+      `);
+
+    }
 
   }
-
-});
+);
 
 
 // ===============================
 // YOUTUBE CONNECTION TEST
 // ===============================
 
-app.get("/api/youtube-status", async (req, res) => {
+app.get(
+  "/api/youtube-status",
+  async (req, res) => {
 
-  try {
+    try {
 
-    if (!fs.existsSync(TOKEN_FILE)) {
+      if (!fs.existsSync(TOKEN_FILE)) {
 
-      return res.json({
-        connected: false,
-        message: "YouTube is not connected yet."
+        return res.json({
+
+          connected: false,
+
+          message:
+            "YouTube is not connected yet."
+
+        });
+
+      }
+
+
+      const tokens =
+        JSON.parse(
+          fs.readFileSync(
+            TOKEN_FILE,
+            "utf8"
+          )
+        );
+
+
+      const oauth2Client =
+        new google.auth.OAuth2(
+          CLIENT_ID,
+          CLIENT_SECRET,
+          REDIRECT_URI
+        );
+
+
+      oauth2Client.setCredentials(
+        tokens
+      );
+
+
+      const youtube =
+        google.youtube({
+
+          version: "v3",
+
+          auth: oauth2Client
+
+        });
+
+
+      const response =
+        await youtube.channels.list({
+
+          part: ["snippet"],
+
+          mine: true
+
+        });
+
+
+      const channel =
+        response.data.items?.[0];
+
+
+      if (!channel) {
+
+        return res.json({
+
+          connected: false,
+
+          message:
+            "YouTube channel not found."
+
+        });
+
+      }
+
+
+      res.json({
+
+        connected: true,
+
+        channelName:
+          channel.snippet.title
+
       });
 
-    }
+
+    } catch (error) {
+
+      console.error(
+        "YouTube Status Error:",
+        error
+      );
 
 
-    const tokens = JSON.parse(
-      fs.readFileSync(TOKEN_FILE, "utf8")
-    );
+      if (
+        error.response &&
+        error.response.data &&
+        error.response.data.error ===
+          "invalid_grant"
+      ) {
+
+        try {
+
+          if (fs.existsSync(TOKEN_FILE)) {
+
+            fs.unlinkSync(TOKEN_FILE);
+
+          }
+
+        } catch {}
 
 
-    const oauth2Client = new google.auth.OAuth2(
-      CLIENT_ID,
-      CLIENT_SECRET,
-      REDIRECT_URI
-    );
+        return res.status(401).json({
+
+          connected: false,
+
+          message:
+            "Google authorization expired. Please connect Google again."
+
+        });
+
+      }
 
 
-    oauth2Client.setCredentials(tokens);
-
-
-    const youtube = google.youtube({
-      version: "v3",
-      auth: oauth2Client
-    });
-
-
-    const response = await youtube.channels.list({
-
-      part: ["snippet"],
-
-      mine: true
-
-    });
-
-
-    const channel = response.data.items?.[0];
-
-
-    if (!channel) {
-
-      return res.json({
-        connected: false,
-        message: "YouTube channel not found."
-      });
-
-    }
-
-
-    res.json({
-
-      connected: true,
-
-      channelName: channel.snippet.title
-
-    });
-
-
-  } catch (error) {
-
-    console.error(
-      "YouTube Status Error:",
-      error
-    );
-
-
-    // If Google says invalid_grant,
-    // remove the bad token.
-
-    if (
-      error.response &&
-      error.response.data &&
-      error.response.data.error === "invalid_grant"
-    ) {
-
-      try {
-
-        if (fs.existsSync(TOKEN_FILE)) {
-          fs.unlinkSync(TOKEN_FILE);
-        }
-
-      } catch {}
-
-
-      return res.status(401).json({
+      res.status(500).json({
 
         connected: false,
 
         message:
-          "Google authorization expired. Please connect Google again."
+          "YouTube connection test failed."
 
       });
 
     }
 
+  }
+);
 
-    res.status(500).json({
 
-      connected: false,
+// ===============================
+// AI STATUS
+// ===============================
 
-      message: "YouTube connection test failed."
+app.get(
+  "/api/ai-status",
+  (req, res) => {
+
+    res.json({
+
+      connected:
+        Boolean(OPENAI_API_KEY),
+
+      service:
+        "ChatGPT/OpenAI AI"
 
     });
 
   }
+);
 
-});
+
+// ===============================
+// AI TEST PAGE
+// ===============================
+
+app.get(
+  "/api/ai-test",
+  async (req, res) => {
+
+    try {
+
+      if (!openai) {
+
+        return res.status(500).json({
+
+          success: false,
+
+          message:
+            "OPENAI_API_KEY is missing."
+
+        });
+
+      }
+
+
+      const response =
+        await openai.responses.create({
+
+          model: "gpt-5.5",
+
+          input:
+            "Say hello in Hindi and say that YT Auto SEO AI is connected successfully."
+
+        });
+
+
+      res.json({
+
+        success: true,
+
+        message:
+          response.output_text
+
+      });
+
+
+    } catch (error) {
+
+      console.error(
+        "AI Test Error:",
+        error
+      );
+
+
+      res.status(500).json({
+
+        success: false,
+
+        message:
+          "AI connection failed."
+
+      });
+
+    }
+
+  }
+);
+
+
+// ===============================
+// AI SEO GENERATOR
+// ===============================
+
+app.post(
+  "/api/generate-seo",
+  async (req, res) => {
+
+    try {
+
+      if (!openai) {
+
+        return res.status(500).json({
+
+          success: false,
+
+          message:
+            "OPENAI_API_KEY is missing."
+
+        });
+
+      }
+
+
+      const topic =
+        String(req.body.topic || "").trim();
+
+
+      if (!topic) {
+
+        return res.status(400).json({
+
+          success: false,
+
+          message:
+            "Please provide a video topic."
+
+        });
+
+      }
+
+
+      const prompt = `
+
+You are the AI SEO assistant for a YouTube channel.
+
+Create YouTube SEO content for this video:
+
+${topic}
+
+Return:
+
+1. A strong YouTube title
+2. A YouTube description
+3. 20 relevant keywords/tags
+4. 10 relevant hashtags
+
+Keep everything natural and relevant to the video.
+Do not claim guaranteed virality.
+Do not use misleading keywords.
+
+Format the answer clearly with these headings:
+
+TITLE:
+DESCRIPTION:
+KEYWORDS:
+HASHTAGS:
+
+`;
+
+
+      const response =
+        await openai.responses.create({
+
+          model: "gpt-5.5",
+
+          input: prompt
+
+        });
+
+
+      res.json({
+
+        success: true,
+
+        result:
+          response.output_text
+
+      });
+
+
+    } catch (error) {
+
+      console.error(
+        "SEO Generation Error:",
+        error
+      );
+
+
+      res.status(500).json({
+
+        success: false,
+
+        message:
+          "AI SEO generation failed."
+
+      });
+
+    }
+
+  }
+);
 
 
 // ===============================
