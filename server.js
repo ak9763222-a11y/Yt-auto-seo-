@@ -1,5 +1,8 @@
 const express = require("express");
 const { google } = require("googleapis");
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
 
 const app = express();
 
@@ -9,64 +12,28 @@ const PORT = process.env.PORT || 10000;
 
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
-const REDIRECT_URI =
-  process.env.GOOGLE_REDIRECT_URI ||
-  "https://yt-auto-seo.onrender.com/oauth2callback";
+const REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI;
 
-// Home page
+// Temporary token storage
+const TOKEN_FILE = path.join("/tmp", "youtube-token.json");
+
+// OAuth state
+let oauthState = null;
+
+// -----------------------------
+// Home
+// -----------------------------
 app.get("/", (req, res) => {
   res.send(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <title>YT Auto SEO</title>
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <style>
-        body {
-          font-family: Arial, sans-serif;
-          background: #f5f5f5;
-          text-align: center;
-          padding: 40px 20px;
-        }
-        .box {
-          max-width: 500px;
-          margin: auto;
-          background: white;
-          padding: 30px;
-          border-radius: 15px;
-          box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-        }
-        h1 {
-          margin-bottom: 10px;
-        }
-        p {
-          color: #555;
-        }
-        a {
-          display: inline-block;
-          margin-top: 20px;
-          padding: 14px 25px;
-          background: #ff0000;
-          color: white;
-          text-decoration: none;
-          border-radius: 8px;
-          font-weight: bold;
-        }
-      </style>
-    </head>
-    <body>
-      <div class="box">
-        <h1>YT Auto SEO</h1>
-        <p>YouTube SEO Tool</p>
-        <p>Connect your Google account to continue.</p>
-        <a href="/auth/google">Connect Google / YouTube</a>
-      </div>
-    </body>
-    </html>
+    <h1>YT Auto SEO 🚀</h1>
+    <p>Server is running successfully.</p>
+    <p><a href="/auth/google">Connect YouTube with Google</a></p>
   `);
 });
 
+// -----------------------------
 // Health check
+// -----------------------------
 app.get("/health", (req, res) => {
   res.json({
     status: "ok",
@@ -74,12 +41,14 @@ app.get("/health", (req, res) => {
   });
 });
 
+// -----------------------------
 // Google OAuth start
+// -----------------------------
 app.get("/auth/google", (req, res) => {
   if (!CLIENT_ID || !CLIENT_SECRET || !REDIRECT_URI) {
-    return res
-      .status(500)
-      .send("Google OAuth settings are not configured.");
+    return res.status(500).send(
+      "Google OAuth environment variables are missing."
+    );
   }
 
   const oauth2Client = new google.auth.OAuth2(
@@ -88,9 +57,12 @@ app.get("/auth/google", (req, res) => {
     REDIRECT_URI
   );
 
+  oauthState = crypto.randomBytes(32).toString("hex");
+
   const authUrl = oauth2Client.generateAuthUrl({
     access_type: "offline",
     prompt: "consent",
+    state: oauthState,
     scope: [
       "https://www.googleapis.com/auth/youtube"
     ]
@@ -99,21 +71,25 @@ app.get("/auth/google", (req, res) => {
   res.redirect(authUrl);
 });
 
+// -----------------------------
 // Google OAuth callback
+// -----------------------------
 app.get("/oauth2callback", async (req, res) => {
   try {
     if (!CLIENT_ID || !CLIENT_SECRET || !REDIRECT_URI) {
-      return res
-        .status(500)
-        .send("Google OAuth settings are not configured.");
+      return res.status(500).send(
+        "Google OAuth environment variables are missing."
+      );
+    }
+
+    if (!req.query.state || req.query.state !== oauthState) {
+      return res.status(400).send("Invalid OAuth state.");
     }
 
     const code = req.query.code;
 
     if (!code) {
-      return res
-        .status(400)
-        .send("Authorization code is missing.");
+      return res.status(400).send("Authorization code is missing.");
     }
 
     const oauth2Client = new google.auth.OAuth2(
@@ -124,25 +100,102 @@ app.get("/oauth2callback", async (req, res) => {
 
     const { tokens } = await oauth2Client.getToken(code);
 
+    // Save tokens temporarily on the server
+    fs.writeFileSync(
+      TOKEN_FILE,
+      JSON.stringify(tokens),
+      "utf8"
+    );
+
+    oauthState = null;
+
     res.send(`
+      <!DOCTYPE html>
       <html>
+      <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>YT Auto SEO</title>
+      </head>
       <body style="font-family:Arial;text-align:center;padding:40px;">
         <h1>Google Connected Successfully ✅</h1>
         <p>Your YouTube authorization was successful.</p>
-        <p>You can now return to YT Auto SEO.</p>
+        <p>YT Auto SEO is now connected to your YouTube account.</p>
+        <p>You can close this page.</p>
       </body>
       </html>
     `);
 
-    console.log("YouTube authorization successful.");
-    console.log("Refresh token received:", !!tokens.refresh_token);
-
   } catch (error) {
-    console.error("Google OAuth error:", error);
-    res.status(500).send("Google authorization failed.");
+    console.error("OAuth Error:", error);
+
+    res.status(500).send(`
+      <h1>Google Authorization Failed ❌</h1>
+      <p>Please check the Render logs.</p>
+    `);
   }
 });
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`YT Auto SEO server running on port ${PORT}`);
+// -----------------------------
+// YouTube connection test
+// -----------------------------
+app.get("/api/youtube-status", async (req, res) => {
+  try {
+    if (!fs.existsSync(TOKEN_FILE)) {
+      return res.json({
+        connected: false,
+        message: "YouTube is not connected yet."
+      });
+    }
+
+    const tokens = JSON.parse(
+      fs.readFileSync(TOKEN_FILE, "utf8")
+    );
+
+    const oauth2Client = new google.auth.OAuth2(
+      CLIENT_ID,
+      CLIENT_SECRET,
+      REDIRECT_URI
+    );
+
+    oauth2Client.setCredentials(tokens);
+
+    const youtube = google.youtube({
+      version: "v3",
+      auth: oauth2Client
+    });
+
+    const response = await youtube.channels.list({
+      part: ["snippet"],
+      mine: true
+    });
+
+    const channel = response.data.items?.[0];
+
+    if (!channel) {
+      return res.json({
+        connected: false,
+        message: "YouTube channel was not found."
+      });
+    }
+
+    res.json({
+      connected: true,
+      channelName: channel.snippet.title
+    });
+
+  } catch (error) {
+    console.error("YouTube Status Error:", error);
+
+    res.status(500).json({
+      connected: false,
+      message: "YouTube connection test failed."
+    });
+  }
 });
+
+// -----------------------------
+// Start server
+// -----------------------------
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`YT Auto SEO running on port ${PORT}`);
+});    
